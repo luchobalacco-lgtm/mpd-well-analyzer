@@ -58,72 +58,91 @@ def get_well_name(ts):
 # ── Find MPD rig-up end ──────────────────────────────────────────────────────
 
 def find_service_start(ts):
-    """Return (start_timestamp, rig_up_hours).
-    Looks for BOPSUR task in any phase (PROD1, INT2, etc.)."""
+    """Find the end of the MPD rig-up (BOPSUR row that mentions MPD/RCD/campana).
+    Returns (start_timestamp, rig_up_hours)."""
     bopsur = ts[ts["Tarea"] == "BOPSUR"].sort_values("Desde")
-    if not bopsur.empty:
-        # Last BOPSUR row = end of rig-up
-        end = bopsur.iloc[-1]["Hasta"]
-        total = round(float(bopsur["Horas"].sum()), 2)
+    if bopsur.empty:
+        return ts.iloc[0]["Desde"], 0.0
+
+    # Find BOPSUR rows related to MPD rig-up specifically
+    mpd_kw = "MPD|campana de viaje|CAMPANA DE VIAJE|4000 PSI|4\.000 PSI|RCD"
+    mpd_rows = bopsur[bopsur["Operacion"].str.contains(mpd_kw, case=False, na=False)]
+
+    if not mpd_rows.empty:
+        # Group by phase — take the phase that contains MPD keywords
+        # and use that group's last Hasta as the start
+        target_phase = mpd_rows.iloc[0]["Fase"]
+        # Find all BOPSUR rows in that same phase around the same time
+        t_ref = mpd_rows.iloc[0]["Desde"]
+        phase_rows = bopsur[
+            (bopsur["Fase"] == target_phase) &
+            (bopsur["Desde"] >= t_ref - pd.Timedelta(hours=24)) &
+            (bopsur["Desde"] <= t_ref + pd.Timedelta(hours=24))
+        ]
+        end = phase_rows["Hasta"].max()
+        total = round(float(phase_rows["Horas"].sum()), 2)
         return end, total
 
-    # Fallback: look for campana de viaje placement in any phase
-    mask = ts["Operacion"].str.contains("monta.*campana|coloca.*campana|campana de viaje", case=False, na=False)
-    found = ts[mask].sort_values("Desde")
-    if not found.empty:
-        return found.iloc[0]["Hasta"], 0.0
-
-    return ts.iloc[0]["Desde"], 0.0
+    # Fallback: first BOPSUR
+    end = bopsur.iloc[0]["Hasta"]
+    return end, round(float(bopsur["Horas"].sum()), 2)
 
 # ── NPT ──────────────────────────────────────────────────────────────────────
 
 def find_npt_mpd(ts, start_date):
-    """Search NPT across ALL phases from start_date."""
+    """Search NPT across ALL phases from start_date.
+    The -CECD suffix in combo names comes from the Evidencia column, not Detalle_NPT."""
     period = ts[ts["Desde"] >= start_date].copy()
 
     combos = {
-        "WREP-RMPD":        {"hs": 0.0, "detail": ""},
-        "WSER-SMPD":        {"hs": 0.0, "detail": ""},
-        "ROT-SFAL-RTME-MPD":{"hs": 0.0, "detail": ""},
-        "ROT-LOSS-CECD":    {"hs": 0.0, "detail": ""},
-        "ROT-WCON-CECD":    {"hs": 0.0, "detail": ""},
+        "WREP-RMPD":         {"hs": 0.0, "detail": ""},
+        "WSER-SMPD":         {"hs": 0.0, "detail": ""},
+        "ROT-SFAL-RTME-MPD": {"hs": 0.0, "detail": ""},
+        "ROT-LOSS-CECD":     {"hs": 0.0, "detail": ""},
+        "ROT-WCON-CECD":     {"hs": 0.0, "detail": ""},
     }
 
     npt_rows = period[period["NPT"].notna()].copy()
-    if not npt_rows.empty:
-        npt_rows["combo"] = (
-            npt_rows["NPT"].astype(str).str.strip() + "-" +
-            npt_rows["Detalle_NPT"].astype(str).str.strip()
-        )
-        for combo in combos:
-            matched = npt_rows[npt_rows["combo"].str.upper() == combo.upper()]
-            if not matched.empty:
-                combos[combo]["hs"] = round(float(matched["Horas"].sum()), 2)
-                combos[combo]["detail"] = " | ".join(
-                    matched["Operacion"].dropna().astype(str).str[:200].tolist()
-                )
+    if npt_rows.empty:
+        return combos
 
-    # Also check Evidence column for CECDMPD
+    npt_rows["npt_base"] = (
+        npt_rows["NPT"].astype(str).str.strip() + "-" +
+        npt_rows["Detalle_NPT"].astype(str).str.strip()
+    )
+
+    # Direct combo match (WREP-RMPD, WSER-SMPD, ROT-SFAL-RTME-MPD)
+    for combo in ["WREP-RMPD", "WSER-SMPD", "ROT-SFAL-RTME-MPD"]:
+        matched = npt_rows[npt_rows["npt_base"].str.upper() == combo.upper()]
+        if not matched.empty:
+            combos[combo]["hs"] = round(float(matched["Horas"].sum()), 2)
+            combos[combo]["detail"] = " | ".join(
+                matched["Operacion"].dropna().astype(str).str[:200].tolist()
+            )
+
+    # CECD combos: NPT+Detalle_NPT base + Evidencia contains CECDMPD
     for col in ["Evidencia", "CausaRaiz"]:
-        if col not in period.columns:
+        if col not in npt_rows.columns:
             continue
-        ev_rows = period[period[col].astype(str).str.contains("CECDMPD", case=False, na=False)]
-        if ev_rows.empty:
+        cecd_rows = npt_rows[npt_rows[col].astype(str).str.contains("CECDMPD", case=False, na=False)]
+        if cecd_rows.empty:
             continue
-        npt_ev = ev_rows[ev_rows["NPT"].notna()].copy()
-        if npt_ev.empty:
-            continue
-        npt_ev["combo"] = (
-            npt_ev["NPT"].astype(str).str.strip() + "-" +
-            npt_ev["Detalle_NPT"].astype(str).str.strip()
-        )
-        for combo in combos:
-            matched = npt_ev[npt_ev["combo"].str.upper() == combo.upper()]
-            if not matched.empty:
-                combos[combo]["hs"] = round(float(matched["Horas"].sum()), 2)
-                combos[combo]["detail"] = " | ".join(
-                    matched["Operacion"].dropna().astype(str).str[:200].tolist()
-                )
+
+        # ROT-WCON-CECD: base combo = ROT-WCON
+        wcon = cecd_rows[cecd_rows["npt_base"].str.upper() == "ROT-WCON"]
+        if not wcon.empty:
+            combos["ROT-WCON-CECD"]["hs"] = round(float(wcon["Horas"].sum()), 2)
+            combos["ROT-WCON-CECD"]["detail"] = " | ".join(
+                wcon["Operacion"].dropna().astype(str).str[:200].tolist()
+            )
+
+        # ROT-LOSS-CECD: base combo = ROT-LOSS
+        loss = cecd_rows[cecd_rows["npt_base"].str.upper() == "ROT-LOSS"]
+        if not loss.empty:
+            combos["ROT-LOSS-CECD"]["hs"] = round(float(loss["Horas"].sum()), 2)
+            combos["ROT-LOSS-CECD"]["detail"] = " | ".join(
+                loss["Operacion"].dropna().astype(str).str[:200].tolist()
+            )
 
     return combos
 
@@ -136,36 +155,42 @@ def find_bearings(ts, sbp, serial_df, start_date):
     mask = period["Operacion"].str.contains("BEARING|BERING", case=False, na=False)
     b_rows = period[mask].reset_index(drop=True)
 
-    # Classify each row as install or remove
     installs = []
     removes  = []
+
     for _, row in b_rows.iterrows():
         op = str(row["Operacion"]).upper()
-        is_install = any(w in op for w in ["INSTALA","COLOCA BEARING","MONTA BEARING","RETIRA CAMPANA"])
-        is_remove  = any(w in op for w in ["RETIRA BEARING","DESMONTA BEARING","SACA BEARING",
-                                            "CAMBIA BEARING","REEMPLAZA BEARING"])
+        # Install signals
+        is_install = (
+            ("COLOCA BEARING" in op or "COLOCA BERING" in op or
+             "MONTA BEARING" in op or "INSTALA BEARING" in op or
+             "INSTALA EN RCD" in op) or
+            ("RETIRA CAMPANA" in op and ("BEARING" in op or "BERING" in op))
+        )
+        # Remove signals
+        is_remove = (
+            ("RETIRA BEARING" in op or "RETIRA BERING" in op or
+             "DESMONTA BEARING" in op or "SACA BEARING" in op) and
+            not ("COLOCA BEARING" in op or "INSTALA BEARING" in op)
+        )
         if is_install and not is_remove:
             installs.append(row)
         elif is_remove and not is_install:
             removes.append(row)
 
-    # Pair installs with removes chronologically
+    # Pair installs with removes
     pairs = []
-    used_removes = set()
+    used = set()
     for inst in installs:
         t_in = inst["Desde"]
-        best = None
         for i, rem in enumerate(removes):
-            if i in used_removes:
+            if i in used:
                 continue
             if rem["Hasta"] > t_in:
-                best = (i, rem)
+                used.add(i)
+                pairs.append({"in_row": inst, "out_row": rem})
                 break
-        if best:
-            used_removes.add(best[0])
-            pairs.append({"in_row": inst, "out_row": best[1]})
 
-    # Build results
     results = []
     for idx, pair in enumerate(pairs):
         t_in  = pair["in_row"]["Desde"]
@@ -173,7 +198,7 @@ def find_bearings(ts, sbp, serial_df, start_date):
 
         seg = period[(period["Desde"] >= t_in) & (period["Hasta"] <= t_out)]
 
-        # Metros perforados
+        # Metros perforados via AVANCE
         drill = seg[seg["Actividad"] == "DRL"]
         total_drill = 0.0
         for _, row in drill.iterrows():
@@ -187,12 +212,12 @@ def find_bearings(ts, sbp, serial_df, start_date):
         # Horas de rotación
         rot_hs = 0
         if sbp is not None:
-            sbp_seg = sbp[(sbp["Time"] >= t_in) & (sbp["Time"] <= t_out)]
-            rot_hs  = int((sbp_seg["RPM"] > 0).sum())
+            s = sbp[(sbp["Time"] >= t_in) & (sbp["Time"] <= t_out)]
+            rot_hs = int((s["RPM"] > 0).sum())
 
-        # Motivo de cambio
-        motivo = "Campana de Viaje"
+        # Motivo de cambio (from remove row text)
         op_out = str(pair["out_row"]["Operacion"]).upper()
+        motivo = "Campana de Viaje"
         if any(w in op_out for w in ["CEMENT","CEMEN"]):
             motivo = "Cementación"
         elif any(w in op_out for w in ["DAÑ","FALLA","LEAK","FUGA","ROTURA"]):
@@ -202,51 +227,46 @@ def find_bearings(ts, sbp, serial_df, start_date):
         elif "HORAS" in op_out:
             motivo = "Horas Acumuladas"
 
-        # Tiempo de cambio (exclude safety meetings)
+        # Tiempo de cambio (exclude safety meetings/charlas)
         tcambio = 0.0
         remove_win = period[
-            (period["Desde"] >= t_out - pd.Timedelta(hours=1)) &
-            (period["Hasta"]  <= t_out + pd.Timedelta(hours=0.5)) &
+            (period["Desde"] >= t_out - pd.Timedelta(hours=1.5)) &
+            (period["Hasta"] <= t_out + pd.Timedelta(hours=0.5)) &
             period["Operacion"].str.contains("BEARING|BERING|CAMPANA", case=False, na=False)
         ]
         for _, row in remove_win.iterrows():
             op = str(row["Operacion"]).upper()
-            if not any(w in op for w in ["REUNI","HSE","SEGUR","CHARLA"]):
+            if not any(w in op for w in ["REUNI","HSE","SEGUR","CHARLA","OPERATIVA"]):
                 tcambio += float(row["Horas"]) if pd.notna(row["Horas"]) else 0.0
         tcambio = round(tcambio, 2)
 
         # Con/Sin presión
         presion = "SIN"
-        for _, row in remove_win.iterrows():
-            op = str(row["Operacion"]).upper()
-            if any(w in op for w in ["PSI","PRESION","BOP CERR","ANULAR CERR","STRIPPING"]):
-                presion = "CON"
-                break
+        op_full = str(pair["out_row"]["Operacion"]).upper()
+        if any(w in op_full for w in ["PSI","PRESION","BOP CERR","ANULAR CERR","STRIPPING","INCREMENTA"]):
+            presion = "CON"
 
-        # Serial
-        serial = ""
+        # Serial — match by install date ±3 hours
+        serial = "No cargado en OW"
         if serial_df is not None:
-            # Match by install date (±2 hours)
             matched = serial_df[
-                (serial_df["InstallDate"] >= t_in - pd.Timedelta(hours=2)) &
-                (serial_df["InstallDate"] <= t_in + pd.Timedelta(hours=2))
+                (serial_df["InstallDate"] >= t_in - pd.Timedelta(hours=3)) &
+                (serial_df["InstallDate"] <= t_in + pd.Timedelta(hours=3))
             ]
             if not matched.empty:
                 serial = str(matched.iloc[0]["Serial"])
-            else:
-                serial = "No cargado en OW"
 
         results.append({
-            "run":      idx + 1,
-            "serial":   serial,
-            "t_in":     t_in,
-            "t_out":    t_out,
-            "drill_m":  round(total_drill),
-            "svc_hs":   svc,
-            "motivo":   motivo,
-            "tcambio":  tcambio,
-            "rot_hs":   rot_hs,
-            "presion":  presion,
+            "run":     idx + 1,
+            "serial":  serial,
+            "t_in":    t_in,
+            "t_out":   t_out,
+            "drill_m": round(total_drill),
+            "svc_hs":  svc,
+            "motivo":  motivo,
+            "tcambio": tcambio,
+            "rot_hs":  rot_hs,
+            "presion": presion,
         })
 
     return results
