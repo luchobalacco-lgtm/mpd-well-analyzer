@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MPD Well Analyzer</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+    :root {
+      --bg:        #0f1117;
+      --surface:   #181c27;
+      --border:    #2a2f3f;
+      --accent:    #3b82f6;
+      --accent2:   #6366f1;
+      --text:      #e2e8f0;
+      --muted:     #64748b;
+      --success:   #22c55e;
+      --warning:   #f59e0b;
+      --radius:    12px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 48px 24px;
+    }
+
+    /* Header */
+    header {
+      text-align: center;
+      margin-bottom: 48px;
+    }
+    .eyebrow {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      letter-spacing: 0.15em;
+      color: var(--accent);
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    h1 {
+      font-size: clamp(28px, 5vw, 42px);
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      background: linear-gradient(135deg, #e2e8f0 0%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .subtitle {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 15px;
+      max-width: 480px;
+      line-height: 1.6;
+    }
+
+    /* Card */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 32px;
+      width: 100%;
+      max-width: 560px;
+    }
+
+    /* Drop zones */
+    .drop-zone {
+      border: 1.5px dashed var(--border);
+      border-radius: 8px;
+      padding: 28px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      position: relative;
+      margin-bottom: 16px;
+    }
+    .drop-zone:hover, .drop-zone.drag-over {
+      border-color: var(--accent);
+      background: rgba(59,130,246,0.05);
+    }
+    .drop-zone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+    .drop-icon {
+      font-size: 28px;
+      margin-bottom: 8px;
+    }
+    .drop-label {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .drop-label strong {
+      display: block;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+    .drop-zone.has-file {
+      border-color: var(--success);
+      background: rgba(34,197,94,0.04);
+    }
+    .drop-zone.has-file .drop-icon::after {
+      content: ' ✓';
+      color: var(--success);
+      font-size: 20px;
+    }
+    .file-name {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--success);
+      margin-top: 6px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Divider */
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      margin: 4px 0 20px;
+    }
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    /* Button */
+    button {
+      width: 100%;
+      padding: 14px;
+      border: none;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #fff;
+      font-family: 'Inter', sans-serif;
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.1s;
+      margin-top: 8px;
+    }
+    button:hover { opacity: 0.9; }
+    button:active { transform: scale(0.99); }
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* Status */
+    #status {
+      margin-top: 20px;
+      font-size: 14px;
+      text-align: center;
+      min-height: 24px;
+      color: var(--muted);
+    }
+    #status.error { color: #f87171; }
+    #status.success { color: var(--success); }
+    #status.loading { color: var(--warning); }
+
+    /* Progress bar */
+    .progress-wrap {
+      height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      margin-top: 12px;
+      overflow: hidden;
+      display: none;
+    }
+    .progress-wrap.active { display: block; }
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      border-radius: 2px;
+      transition: width 0.4s ease;
+    }
+
+    /* Note */
+    .note {
+      margin-top: 24px;
+      padding: 14px 16px;
+      background: rgba(245,158,11,0.08);
+      border: 1px solid rgba(245,158,11,0.2);
+      border-radius: 8px;
+      font-size: 12.5px;
+      color: #fbbf24;
+      line-height: 1.6;
+    }
+    .note strong { display: block; margin-bottom: 4px; }
+
+    /* Footer */
+    footer {
+      margin-top: 48px;
+      font-size: 12px;
+      color: var(--muted);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <p class="eyebrow">MPD Operations · Well Analyzer</p>
+  <h1>Procesador de<br>Planillas MPD</h1>
+  <p class="subtitle">Subí la planilla del pozo y la plantilla vacía. La app completa automáticamente los datos operativos, NPT y carreras de bearing.</p>
+</header>
+
+<div class="card">
+  <form id="uploadForm">
+
+    <div class="drop-zone" id="zone1">
+      <input type="file" id="dataFile" accept=".xlsx" />
+      <div class="drop-icon">📊</div>
+      <div class="drop-label">
+        <strong>Planilla del pozo</strong>
+        Con pestañas Time Summary, SBP y Bearing Serial
+      </div>
+      <div class="file-name" id="name1"></div>
+    </div>
+
+    <div class="divider">luego</div>
+
+    <div class="drop-zone" id="zone2">
+      <input type="file" id="templateFile" accept=".xlsx" />
+      <div class="drop-icon">📋</div>
+      <div class="drop-label">
+        <strong>Plantilla vacía</strong>
+        Con las pestañas Horas Operativas, NPT y Bearing Resumen
+      </div>
+      <div class="file-name" id="name2"></div>
+    </div>
+
+    <button type="submit" id="btn" disabled>Procesar y descargar</button>
+
+    <div class="progress-wrap" id="progressWrap">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+
+    <div id="status"></div>
+  </form>
+
+  <div class="note">
+    <strong>⚠️ Revisá siempre los metros strippeados</strong>
+    Este campo requiere revisión manual: la app lo completa con "REVISAR" cuando no puede calcularlo con certeza desde el texto de la planilla.
+  </div>
+</div>
+
+<footer>MPD Well Analyzer · Procesamiento local seguro · Los archivos no se almacenan</footer>
+
+<script>
+  const dataInput    = document.getElementById('dataFile');
+  const templateInput = document.getElementById('templateFile');
+  const btn          = document.getElementById('btn');
+  const status       = document.getElementById('status');
+  const progressWrap = document.getElementById('progressWrap');
+  const progressBar  = document.getElementById('progressBar');
+
+  function updateZone(input, zoneId, nameId) {
+    input.addEventListener('change', () => {
+      const zone = document.getElementById(zoneId);
+      const name = document.getElementById(nameId);
+      if (input.files[0]) {
+        zone.classList.add('has-file');
+        name.textContent = input.files[0].name;
+      }
+      checkReady();
+    });
+  }
+
+  updateZone(dataInput,     'zone1', 'name1');
+  updateZone(templateInput, 'zone2', 'name2');
+
+  // Drag & drop
+  ['zone1','zone2'].forEach(id => {
+    const zone = document.getElementById(id);
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+    zone.addEventListener('drop', e => {
+      e.preventDefault();
+      zone.classList.remove('drag-over');
+      const inp = zone.querySelector('input[type=file]');
+      inp.files = e.dataTransfer.files;
+      inp.dispatchEvent(new Event('change'));
+    });
+  });
+
+  function checkReady() {
+    btn.disabled = !(dataInput.files[0] && templateInput.files[0]);
+  }
+
+  function animateProgress(targetPct, duration) {
+    const start = performance.now();
+    const from  = parseFloat(progressBar.style.width) || 0;
+    function step(now) {
+      const t = Math.min((now - start) / duration, 1);
+      progressBar.style.width = (from + (targetPct - from) * t) + '%';
+      if (t < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    btn.disabled = true;
+    status.className = 'loading';
+    status.textContent = 'Procesando planilla...';
+    progressWrap.classList.add('active');
+    animateProgress(70, 1800);
+
+    const fd = new FormData();
+    fd.append('data_file',     dataInput.files[0]);
+    fd.append('template_file', templateInput.files[0]);
+
+    try {
+      const res = await fetch('/process', { method: 'POST', body: fd });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || 'Error desconocido');
+      }
+      animateProgress(100, 300);
+
+      const blob     = await res.blob();
+      const cd       = res.headers.get('content-disposition') || '';
+      const match    = cd.match(/filename="?([^";\n]+)"?/);
+      const filename = match ? match[1] : 'resultado.xlsx';
+
+      const url  = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href  = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+
+      status.className = 'success';
+      status.textContent = '✓ Planilla descargada. Revisá los campos marcados como REVISAR.';
+    } catch (err) {
+      animateProgress(100, 200);
+      status.className = 'error';
+      status.textContent = '✗ Error: ' + err.message;
+    } finally {
+      btn.disabled = false;
+      setTimeout(() => progressWrap.classList.remove('active'), 1000);
+    }
+  });
+</script>
+</body>
+</html>
