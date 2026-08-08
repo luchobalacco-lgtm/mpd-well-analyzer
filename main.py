@@ -58,21 +58,15 @@ def get_well_name(ts):
 # ── Find MPD rig-up end ──────────────────────────────────────────────────────
 
 def find_service_start(ts):
-    """Find the end of the MPD rig-up (BOPSUR row that mentions MPD/RCD/campana).
-    Returns (start_timestamp, rig_up_hours)."""
     bopsur = ts[ts["Tarea"] == "BOPSUR"].sort_values("Desde")
     if bopsur.empty:
         return ts.iloc[0]["Desde"], 0.0
 
-    # Find BOPSUR rows related to MPD rig-up specifically
-    mpd_kw = "MPD|campana de viaje|CAMPANA DE VIAJE|4000 PSI|4\.000 PSI|RCD"
+    mpd_kw = r"MPD|campana de viaje|4000 PSI|4\.000 PSI|RCD"
     mpd_rows = bopsur[bopsur["Operacion"].str.contains(mpd_kw, case=False, na=False)]
 
     if not mpd_rows.empty:
-        # Group by phase — take the phase that contains MPD keywords
-        # and use that group's last Hasta as the start
         target_phase = mpd_rows.iloc[0]["Fase"]
-        # Find all BOPSUR rows in that same phase around the same time
         t_ref = mpd_rows.iloc[0]["Desde"]
         phase_rows = bopsur[
             (bopsur["Fase"] == target_phase) &
@@ -83,15 +77,12 @@ def find_service_start(ts):
         total = round(float(phase_rows["Horas"].sum()), 2)
         return end, total
 
-    # Fallback: first BOPSUR
     end = bopsur.iloc[0]["Hasta"]
     return end, round(float(bopsur["Horas"].sum()), 2)
 
 # ── NPT ──────────────────────────────────────────────────────────────────────
 
 def find_npt_mpd(ts, start_date):
-    """Search NPT across ALL phases from start_date.
-    The -CECD suffix in combo names comes from the Evidencia column, not Detalle_NPT."""
     period = ts[ts["Desde"] >= start_date].copy()
 
     combos = {
@@ -111,7 +102,7 @@ def find_npt_mpd(ts, start_date):
         npt_rows["Detalle_NPT"].astype(str).str.strip()
     )
 
-    # Direct combo match (WREP-RMPD, WSER-SMPD, ROT-SFAL-RTME-MPD)
+    # Direct combos
     for combo in ["WREP-RMPD", "WSER-SMPD", "ROT-SFAL-RTME-MPD"]:
         matched = npt_rows[npt_rows["npt_base"].str.upper() == combo.upper()]
         if not matched.empty:
@@ -120,65 +111,83 @@ def find_npt_mpd(ts, start_date):
                 matched["Operacion"].dropna().astype(str).str[:200].tolist()
             )
 
-    # CECD combos: NPT+Detalle_NPT base + Evidencia contains CECDMPD
+    # CECD combos: base combo + Evidencia contains CECDMPD
     for col in ["Evidencia", "CausaRaiz"]:
         if col not in npt_rows.columns:
             continue
         cecd_rows = npt_rows[npt_rows[col].astype(str).str.contains("CECDMPD", case=False, na=False)]
         if cecd_rows.empty:
             continue
-
-        # ROT-WCON-CECD: base combo = ROT-WCON
-        wcon = cecd_rows[cecd_rows["npt_base"].str.upper() == "ROT-WCON"]
-        if not wcon.empty:
-            combos["ROT-WCON-CECD"]["hs"] = round(float(wcon["Horas"].sum()), 2)
-            combos["ROT-WCON-CECD"]["detail"] = " | ".join(
-                wcon["Operacion"].dropna().astype(str).str[:200].tolist()
-            )
-
-        # ROT-LOSS-CECD: base combo = ROT-LOSS
-        loss = cecd_rows[cecd_rows["npt_base"].str.upper() == "ROT-LOSS"]
-        if not loss.empty:
-            combos["ROT-LOSS-CECD"]["hs"] = round(float(loss["Horas"].sum()), 2)
-            combos["ROT-LOSS-CECD"]["detail"] = " | ".join(
-                loss["Operacion"].dropna().astype(str).str[:200].tolist()
-            )
+        for base, target in [("ROT-WCON", "ROT-WCON-CECD"), ("ROT-LOSS", "ROT-LOSS-CECD")]:
+            matched = cecd_rows[cecd_rows["npt_base"].str.upper() == base.upper()]
+            if not matched.empty:
+                combos[target]["hs"] = round(float(matched["Horas"].sum()), 2)
+                combos[target]["detail"] = " | ".join(
+                    matched["Operacion"].dropna().astype(str).str[:200].tolist()
+                )
 
     return combos
 
 # ── Bearings ─────────────────────────────────────────────────────────────────
 
+# Keywords that indicate a safety/operational meeting (not actual bearing work)
+SAFETY_KW = re.compile(
+    r"REUNI|HSE|CHARLA|SEGURIDAD|OPERATIVA|PREVIO|FLOW CHECK|FC PREVIO|CHECK PREVIO",
+    re.IGNORECASE
+)
+
+# Keywords for install and remove actions — using regex to catch conjugations
+INSTALL_RE = re.compile(
+    r"(COLOC[AO][NR]?\s+BEARING|COLOC[AO][NR]?\s+BERING|"
+    r"MONT[AO]\s+BEARING|MONT[AO]\s+BERING|"
+    r"INSTALA\w*\s+BEARING|INSTALA\w*\s+BERING|"
+    r"INSTALA\w*\s+EN\s+RCD|"
+    r"RETIRAD?\w*\s+CAMPANA.*BEARING|RETIRAD?\w*\s+CAMPANA.*BERING|"
+    r"RETIRO\s+DE\s+CAMPANA.*BEARING|RETIRO\s+DE\s+CAMPANA.*BERING)",
+    re.IGNORECASE
+)
+
+REMOVE_RE = re.compile(
+    r"(RETIRA\w*\s+BEARING|RETIRA\w*\s+BERING|"
+    r"DESMONTA\w*\s+BEARING|SACA\w*\s+BEARING|"
+    r"CAMBIA\w*\s+BEARING|REEMPLAZA\w*\s+BEARING)",
+    re.IGNORECASE
+)
+
+def classify_bearing_row(op_text):
+    """Returns 'install', 'remove', or None."""
+    if SAFETY_KW.search(op_text):
+        return None
+    has_install = bool(INSTALL_RE.search(op_text))
+    has_remove  = bool(REMOVE_RE.search(op_text))
+    if has_install and not has_remove:
+        return "install"
+    if has_remove and not has_install:
+        return "remove"
+    if has_install and has_remove:
+        # Both: check which action comes first in the text
+        m_i = INSTALL_RE.search(op_text)
+        m_r = REMOVE_RE.search(op_text)
+        return "install" if m_i.start() < m_r.start() else "remove"
+    return None
+
 def find_bearings(ts, sbp, serial_df, start_date):
-    """Detect bearing install/remove events across ALL phases from start_date."""
     period = ts[ts["Desde"] >= start_date].copy().sort_values("Desde")
 
-    mask = period["Operacion"].str.contains("BEARING|BERING", case=False, na=False)
+    mask = period["Operacion"].str.contains(r"BEARING|BERING", case=False, na=False)
     b_rows = period[mask].reset_index(drop=True)
 
     installs = []
     removes  = []
 
     for _, row in b_rows.iterrows():
-        op = str(row["Operacion"]).upper()
-        # Install signals
-        is_install = (
-            ("COLOCA BEARING" in op or "COLOCA BERING" in op or
-             "MONTA BEARING" in op or "INSTALA BEARING" in op or
-             "INSTALA EN RCD" in op) or
-            ("RETIRA CAMPANA" in op and ("BEARING" in op or "BERING" in op))
-        )
-        # Remove signals
-        is_remove = (
-            ("RETIRA BEARING" in op or "RETIRA BERING" in op or
-             "DESMONTA BEARING" in op or "SACA BEARING" in op) and
-            not ("COLOCA BEARING" in op or "INSTALA BEARING" in op)
-        )
-        if is_install and not is_remove:
+        kind = classify_bearing_row(str(row["Operacion"]))
+        if kind == "install":
             installs.append(row)
-        elif is_remove and not is_install:
+        elif kind == "remove":
             removes.append(row)
 
-    # Pair installs with removes
+    # Pair installs → removes chronologically
     pairs = []
     used = set()
     for inst in installs:
@@ -198,7 +207,7 @@ def find_bearings(ts, sbp, serial_df, start_date):
 
         seg = period[(period["Desde"] >= t_in) & (period["Hasta"] <= t_out)]
 
-        # Metros perforados via AVANCE
+        # Metros perforados
         drill = seg[seg["Actividad"] == "DRL"]
         total_drill = 0.0
         for _, row in drill.iterrows():
@@ -206,16 +215,14 @@ def find_bearings(ts, sbp, serial_df, start_date):
             if m:
                 total_drill += float(m.group(1).replace(",", "."))
 
-        # Tiempo de servicio
         svc = round((t_out - t_in).total_seconds() / 3600, 2)
 
-        # Horas de rotación
         rot_hs = 0
         if sbp is not None:
             s = sbp[(sbp["Time"] >= t_in) & (sbp["Time"] <= t_out)]
             rot_hs = int((s["RPM"] > 0).sum())
 
-        # Motivo de cambio (from remove row text)
+        # Motivo
         op_out = str(pair["out_row"]["Operacion"]).upper()
         motivo = "Campana de Viaje"
         if any(w in op_out for w in ["CEMENT","CEMEN"]):
@@ -227,23 +234,19 @@ def find_bearings(ts, sbp, serial_df, start_date):
         elif "HORAS" in op_out:
             motivo = "Horas Acumuladas"
 
-        # Tiempo de cambio (exclude safety meetings/charlas)
+        # Tiempo de cambio: ONLY the actual remove row (exclude safety meetings)
         tcambio = 0.0
-        remove_win = period[
-            (period["Desde"] >= t_out - pd.Timedelta(hours=1.5)) &
-            (period["Hasta"] <= t_out + pd.Timedelta(hours=0.5)) &
-            period["Operacion"].str.contains("BEARING|BERING|CAMPANA", case=False, na=False)
-        ]
-        for _, row in remove_win.iterrows():
-            op = str(row["Operacion"]).upper()
-            if not any(w in op for w in ["REUNI","HSE","SEGUR","CHARLA","OPERATIVA"]):
-                tcambio += float(row["Horas"]) if pd.notna(row["Horas"]) else 0.0
-        tcambio = round(tcambio, 2)
+        out_row_op = str(pair["out_row"]["Operacion"])
+        if not SAFETY_KW.search(out_row_op):
+            tcambio = round(float(pair["out_row"]["Horas"]) if pd.notna(pair["out_row"]["Horas"]) else 0.0, 2)
+        # Also add install row if it's a different row (bearing placed in same op)
+        in_row_op = str(pair["in_row"]["Operacion"])
+        if pair["in_row"]["Desde"] != pair["out_row"]["Desde"] and not SAFETY_KW.search(in_row_op):
+            pass  # install row is the next bearing's context, not this change time
 
         # Con/Sin presión
         presion = "SIN"
-        op_full = str(pair["out_row"]["Operacion"]).upper()
-        if any(w in op_full for w in ["PSI","PRESION","BOP CERR","ANULAR CERR","STRIPPING","INCREMENTA"]):
+        if any(w in op_out for w in ["PSI","PRESION","BOP CERR","ANULAR CERR","STRIPPING","INCREMENTA"]):
             presion = "CON"
 
         # Serial — match by install date ±3 hours
