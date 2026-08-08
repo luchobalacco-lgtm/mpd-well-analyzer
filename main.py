@@ -282,7 +282,7 @@ def fill_template(template_bytes, well_name, inicio, fin, total_hs, npt_combos, 
     if "Horas Operativas del Servicio" in wb.sheetnames:
         ws = wb["Horas Operativas del Servicio"]
         ws["B3"] = well_name
-        ws["C3"] = None
+        ws["C3"] = "SLB"
         ws["D3"] = inicio
         ws["D3"].number_format = "DD/MM/YYYY HH:MM"
         ws["E3"] = fin
@@ -294,7 +294,7 @@ def fill_template(template_bytes, well_name, inicio, fin, total_hs, npt_combos, 
         total = round(sum(v["hs"] for v in npt_combos.values()), 2)
         for i, (combo, data) in enumerate(npt_combos.items(), 3):
             ws[f"B{i}"] = well_name
-            ws[f"C{i}"] = None
+            ws[f"C{i}"] = "SLB"
             ws[f"D{i}"] = combo
             ws[f"E{i}"] = data["hs"]
             ws[f"F{i}"] = total
@@ -305,7 +305,7 @@ def fill_template(template_bytes, well_name, inicio, fin, total_hs, npt_combos, 
         ws = wb["Bearing Resumen"]
         for i, b in enumerate(bearings, 3):
             ws[f"B{i}"] = well_name
-            ws[f"C{i}"] = None
+            ws[f"C{i}"] = "SLB"
             ws[f"D{i}"] = b["run"]
             ws[f"E{i}"] = b["serial"]
             ws[f"F{i}"] = b["drill_m"]
