@@ -196,7 +196,7 @@ def find_bearings(ts, sbp, serial_df, start_date):
             presion = "CON"
         serial = "No cargado en OW"
         if serial_df is not None:
-            matched = serial_df[(serial_df["InstallDate"] >= t_in - pd.Timedelta(hours=3)) & (serial_df["InstallDate"] <= t_in + pd.Timedelta(hours=3))]
+            matched = serial_df[(serial_df["InstallDate"] >= t_in - pd.Timedelta(hours=24)) & (serial_df["InstallDate"] <= t_in + pd.Timedelta(hours=24))]
             if not matched.empty:
                 serial = str(matched.iloc[0]["Serial"])
         results.append({"run": idx+1, "serial": serial, "t_in": t_in, "t_out": t_out, "drill_m": round(total_drill), "strip_m": strip_m, "svc_hs": svc, "motivo": motivo, "tcambio": tcambio, "rot_hs": rot_hs, "presion": presion})
